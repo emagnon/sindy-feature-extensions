@@ -1,37 +1,18 @@
-import numpy as np
 from typing import List, Optional, Sequence
 
-
-class _BaseLibrary:
-    """Minimal PySINDy-like feature library interface."""
-
-    def fit(self, x: np.ndarray, y: Optional[np.ndarray] = None):
-        x = _validate_2d(x)
-        self.n_input_features_ = x.shape[1]
-        return self
-
-    def transform(self, x: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-
-    def fit_transform(self, x: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
-        return self.fit(x, y).transform(x)
-
-    def get_feature_names(self, input_features: Optional[List[str]] = None) -> List[str]:
-        raise NotImplementedError
+import numpy as np
+from pysindy.feature_library.base import BaseFeatureLibrary, x_sequence_or_item
+from pysindy.utils import AxesArray
 
 
-def _validate_2d(x: np.ndarray) -> np.ndarray:
-    if x.ndim == 1:
-        x = x.reshape(-1, 1)
-    if x.ndim != 2:
-        raise ValueError("Expected 2D array of shape (n_samples, n_features)")
-    return x
+def _check_2d(arr: np.ndarray, name: str = "x") -> np.ndarray:
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D array for {name}, got shape {arr.shape}")
+    return arr
 
 
-class ChebyshevLibrary(_BaseLibrary):
-    """Per-variable Chebyshev polynomial features T_k(x_i).
-    degree=4 yields T1..T4 per feature. Optionally drop the bias term.
-    """
+class ChebyshevLibrary(BaseFeatureLibrary):
+    """Per-variable Chebyshev polynomial features T_k(x_j)."""
 
     def __init__(self, degree: int = 4, include_unity: bool = False):
         if degree < 1:
@@ -39,54 +20,74 @@ class ChebyshevLibrary(_BaseLibrary):
         self.degree = degree
         self.include_unity = include_unity
 
-    def transform(self, x: np.ndarray) -> np.ndarray:
-        x = _validate_2d(x)
-        feats = []
-        names = []
-        for j in range(x.shape[1]):
-            xi = x[:, j]
-            for k in range(1 if not self.include_unity else 0, self.degree + 1):
-                if k == 0:
-                    val = np.ones_like(xi)
-                    name = f"T0(x{j})"
-                else:
-                    # evaluate per-sample Chebyshev via recurrence
-                    # T0=1, T1=t, Tk=2 t T_{k-1} - T_{k-2}
-                    Tkm2 = np.ones_like(xi)
-                    Tkm1 = xi.copy()
-                    if k == 1:
-                        Tk = Tkm1
-                    else:
-                        Tk = None
-                        for _ in range(2, k + 1):
-                            Tk = 2 * xi * Tkm1 - Tkm2
-                            Tkm2, Tkm1 = Tkm1, Tk
-                    val = Tk
-                    name = f"T{k}(x{j})"
-                feats.append(val)
-                names.append(name)
-        self._feature_names = names
-        return np.vstack(feats).T
+    @x_sequence_or_item
+    def fit(self, x_full, y=None):
+        x0 = x_full[0]
+        n_features = x0.shape[x0.ax_coord]
+        self.n_features_in_ = n_features
+        per_var = (self.degree + 1) if self.include_unity else self.degree
+        self.n_output_features_ = n_features * per_var
+        return self
+
+    @x_sequence_or_item
+    def transform(self, x_full):
+        if not hasattr(self, "n_features_in_"):
+            raise AttributeError("Call fit before transform")
+
+        xp_full = []
+        for x in x_full:
+            axes = x.axes
+            ax_feat = x.ax_coord
+            arr = np.asarray(x)
+            _check_2d(arr)
+
+            X = arr if ax_feat == 1 else arr.T
+            n_samples, d = X.shape
+
+            cols = []
+            for j in range(d):
+                xi = X[:, j]
+                if self.include_unity:
+                    cols.append(np.ones((n_samples, 1)))
+
+                Tkm2 = np.ones_like(xi)
+                Tkm1 = xi
+                if not self.include_unity:
+                    cols.append(Tkm1.reshape(-1, 1))
+                for k in range(2, self.degree + 1):
+                    Tk = 2.0 * xi * Tkm1 - Tkm2
+                    cols.append(Tk.reshape(-1, 1))
+                    Tkm2, Tkm1 = Tkm1, Tk
+
+            if cols:
+                out_samples_major = np.hstack(cols)
+            else:
+                out_samples_major = np.empty((X.shape[0], 0))
+
+            out = out_samples_major if ax_feat == 1 else out_samples_major.T
+            xp_full.append(AxesArray(out, axes))
+        return xp_full
 
     def get_feature_names(self, input_features: Optional[List[str]] = None) -> List[str]:
+        if not hasattr(self, "n_features_in_"):
+            raise AttributeError("Call fit before get_feature_names")
+
+        d = self.n_features_in_
         if input_features is None:
-            return self._feature_names
-        # remap x{j} to provided names
-        out = []
-        for n in self._feature_names:
-            if n.startswith("T0("):
-                out.append(n.replace("x0", input_features[0]))  # rarely used
-                continue
-            # find index between 'x' and ')'
-            start = n.find("x") + 1
-            end = n.find(")")
-            j = int(n[start:end])
-            out.append(n.replace(f"x{j}", input_features[j]))
-        return out
+            input_features = [f"x{j}" for j in range(d)]
+
+        names = []
+        for j in range(d):
+            var = input_features[j]
+            if self.include_unity:
+                names.append(f"T0({var})")
+            for k in range(1, self.degree + 1):
+                names.append(f"T{k}({var})")
+        return names
 
 
-class TrigLibrary(_BaseLibrary):
-    """Per-variable trigonometric features: sin(k x_i), cos(k x_i)."""
+class TrigLibrary(BaseFeatureLibrary):
+    """Per-variable trigonometric features: sin(k x_j), cos(k x_j)."""
 
     def __init__(self, max_frequency: int = 3, include_base: bool = True):
         if max_frequency < 1:
@@ -94,88 +95,142 @@ class TrigLibrary(_BaseLibrary):
         self.max_frequency = max_frequency
         self.include_base = include_base
 
-    def transform(self, x: np.ndarray) -> np.ndarray:
-        x = _validate_2d(x)
-        feats = []
-        names = []
-        for j in range(x.shape[1]):
-            xi = x[:, j]
-            if self.include_base:
-                feats.append(np.sin(xi))
-                feats.append(np.cos(xi))
-                names += [f"sin(x{j})", f"cos(x{j})"]
-            for k in range(2, self.max_frequency + 1):
-                feats.append(np.sin(k * xi))
-                feats.append(np.cos(k * xi))
-                names += [f"sin({k}x{j})", f"cos({k}x{j})"]
-        self._feature_names = names
-        return np.vstack(feats).T if feats else np.empty((x.shape[0], 0))
+    @x_sequence_or_item
+    def fit(self, x_full, y=None):
+        x0 = x_full[0]
+        n_features = x0.shape[x0.ax_coord]
+        self.n_features_in_ = n_features
+        if self.include_base:
+            per_var = 2 * self.max_frequency
+        else:
+            per_var = 2 * max(self.max_frequency - 1, 0)
+        self.n_output_features_ = n_features * per_var
+        return self
+
+    @x_sequence_or_item
+    def transform(self, x_full):
+        if not hasattr(self, "n_features_in_"):
+            raise AttributeError("Call fit before transform")
+
+        xp_full = []
+        for x in x_full:
+            axes = x.axes
+            ax_feat = x.ax_coord
+            arr = np.asarray(x)
+            _check_2d(arr)
+
+            X = arr if ax_feat == 1 else arr.T
+            n_samples, d = X.shape
+
+            cols = []
+            for j in range(d):
+                xi = X[:, j]
+                start_k = 1 if self.include_base else 2
+                for k in range(start_k, self.max_frequency + 1):
+                    cols.append(np.sin(k * xi).reshape(-1, 1))
+                    cols.append(np.cos(k * xi).reshape(-1, 1))
+
+            out_samples_major = np.hstack(cols) if cols else np.empty((X.shape[0], 0))
+            out = out_samples_major if ax_feat == 1 else out_samples_major.T
+            xp_full.append(AxesArray(out, axes))
+        return xp_full
 
     def get_feature_names(self, input_features: Optional[List[str]] = None) -> List[str]:
+        if not hasattr(self, "n_features_in_"):
+            raise AttributeError("Call fit before get_feature_names")
+
+        d = self.n_features_in_
         if input_features is None:
-            return self._feature_names
-        out = []
-        for n in self._feature_names:
-            start = n.find("x") + 1
-            end = n.find(")", start) if ")" in n else len(n)
-            j = int(n[start:end])
-            out.append(n.replace(f"x{j}", input_features[j]))
-        return out
+            input_features = [f"x{j}" for j in range(d)]
+
+        names = []
+        start_k = 1 if self.include_base else 2
+        for j in range(d):
+            var = input_features[j]
+            for k in range(start_k, self.max_frequency + 1):
+                if k == 1:
+                    names += [f"sin({var})", f"cos({var})"]
+                else:
+                    names += [f"sin({k}{var})", f"cos({k}{var})"]
+        return names
 
 
-class TimeDelayLibrary(_BaseLibrary):
-    """Builds past-lagged copies of the inputs: x(t - l) for l in lags.
+class TimeDelayLibrary(BaseFeatureLibrary):
+    """Builds lagged copies of the inputs: x_j(t - lag) for lag in lags."""
 
-    Parameters
-    ----------
-    lags : Sequence[int]
-        Positive integers interpreted as number of steps back (no future allowed).
-    include_current : bool
-        If True, also include x(t) alongside lagged features.
-    drop_na : bool
-        If True, discards the first max(lags) rows so output aligns without NaNs.
-    """
-
-    def __init__(self, lags: Sequence[int], include_current: bool = True, drop_na: bool = True):
-        if not len(lags):
+    def __init__(
+        self,
+        lags: Sequence[int],
+        include_current: bool = True,
+        drop_na: bool = False,
+    ):
+        if not lags:
             raise ValueError("lags must be a non-empty sequence")
-        if any(l <= 0 for l in lags):
+        lags_int = [int(lag) for lag in lags]
+        if any(lag <= 0 for lag in lags_int):
             raise ValueError("lags must be positive (past-only)")
-        self.lags = sorted(set(int(l) for l in lags))
+        self.lags = sorted(set(lags_int))
         self.include_current = include_current
         self.drop_na = drop_na
 
-    def transform(self, x: np.ndarray) -> np.ndarray:
-        x = _validate_2d(x)
-        T, d = x.shape
-        max_lag = max(self.lags)
-        cols = []
-        names = []
-        if self.include_current:
-            cols.append(x)
-            names += [f"x{j}(t)" for j in range(d)]
-        for l in self.lags:
-            pad = np.full((l, d), np.nan)
-            lagged = np.vstack([pad, x[:-l, :]])
-            cols.append(lagged)
-            names += [f"x{j}(t-{l})" for j in range(d)]
-        out = np.hstack(cols)
-        if self.drop_na:
-            out = out[max_lag:, :]
-            self._offset = max_lag
-        else:
-            self._offset = 0
-        self._feature_names = names
-        return out
+    @x_sequence_or_item
+    def fit(self, x_full, y=None):
+        x0 = x_full[0]
+        n_features = x0.shape[x0.ax_coord]
+        self.n_features_in_ = n_features
+        per_var = (1 if self.include_current else 0) + len(self.lags)
+        self.n_output_features_ = n_features * per_var
+        return self
+
+    @x_sequence_or_item
+    def transform(self, x_full):
+        if not hasattr(self, "n_features_in_"):
+            raise AttributeError("Call fit before transform")
+
+        xp_full = []
+        max_lag = max(self.lags) if self.lags else 0
+
+        for x in x_full:
+            axes = x.axes
+            ax_feat = x.ax_coord
+            arr = np.asarray(x)
+            _check_2d(arr)
+
+            X = arr if ax_feat == 1 else arr.T
+            n_samples, d = X.shape
+
+            blocks = []
+            if self.include_current:
+                blocks.append(X)
+
+            for lag in self.lags:
+                pad = np.full((lag, d), np.nan)
+                lagged = np.vstack([pad, X[:-lag, :]])
+                blocks.append(lagged)
+
+            out_samples_major = np.hstack(blocks) if blocks else np.empty((n_samples, 0))
+
+            if self.drop_na and max_lag > 0:
+                out_samples_major = out_samples_major[max_lag:, :]
+
+            out = out_samples_major if ax_feat == 1 else out_samples_major.T
+            xp_full.append(AxesArray(out, axes))
+
+        return xp_full
 
     def get_feature_names(self, input_features: Optional[List[str]] = None) -> List[str]:
+        if not hasattr(self, "n_features_in_"):
+            raise AttributeError("Call fit before get_feature_names")
+
+        d = self.n_features_in_
         if input_features is None:
-            return self._feature_names
-        out = []
-        for name in self._feature_names:
-            # find indices like x{j}
-            start = name.find("x") + 1
-            end = name.find("(", start)
-            j = int(name[start:end])
-            out.append(name.replace(f"x{j}", input_features[j]))
-        return out
+            input_features = [f"x{j}" for j in range(d)]
+
+        names = []
+        if self.include_current:
+            for j in range(d):
+                names.append(f"{input_features[j]}(t)")
+        for lag in self.lags:
+            for j in range(d):
+                names.append(f"{input_features[j]}(t-{lag})")
+        return names

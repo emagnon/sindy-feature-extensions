@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sindy-feature-extensions"
-version = "0.1.0"
+version = "0.1.1"
 description = "Feature libraries, derivative estimators, and CV sparse regression for SINDy workflows"
 readme = "README.md"
 authors = [{name = "emagnon"}]
@@ -21,27 +21,32 @@ dev = [
   "pytest>=7.0",
   "pytest-cov",
   "pre-commit",
-  "pylint",
   "black",
   "isort",
-  "mypy",
+  "flake8",
   "matplotlib",
-  "pysindy>=1.7; python_version>='3.9'",
-  "tvregdiff; python_version>='3.9'",
+]
+examples = [
+  "pysindy>=1.7",
+]
+tvreg = [
+  "tvregdiff",
 ]
 
-[tool.setuptools.package-dir]
-= "src"
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["sindy_feat_ext*"]
 
 [tool.black]
 line-length = 100
-target-version = ["py39"]
+target-version = ["py39", "py310"]
 
-[tool.isort]
-profile = "black"
+[tool.ruff]
+line-length = 100
+select = ["E", "W", "I"]
 
 [tool.pytest.ini_options]
 addopts = "-q --disable-warnings"

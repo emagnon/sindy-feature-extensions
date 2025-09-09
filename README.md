@@ -1,63 +1,54 @@
 # SINDy Feature Extensions
 
-This work was realized in 2019 and was designed to extend the original pySINDy repo: https://github.com/luckystarufo/pySINDy version 0.2.0
+This work was realized in 2019 and was designed to extend the original pySINDy repo: [https://github.com/luckystarufo/pySINDy](https://github.com/luckystarufo/pySINDy) version 0.2.0.
+The original repository is now deprecated and the updated version can be found here: [PySINDy](https://github.com/dynamicslab/pysindy)
 
-Small, reusable add-ons for SINDy-style system identification:
-- Feature libraries: Chebyshev polynomials, per-variable trigonometric, time-delay embeddings
-- Derivative estimators: finite difference, Savitzky–Golay, optional TV-regularized
-- Cross-validated sparse regression (CV-STLSQ) for robust threshold selection
-- Leakage guards: detect future-looking inputs, safe lag builders
-- Utilities: roll-forward splits and embedding helpers
+This repository provides a collection of modular, reusable extensions for the original pySINDy library, designed to enhance sparse system identification. These tools allow for the incorporation of domain knowledge through custom feature libraries and provide robust methods for differentiation and model selection.
 
-Compatible with PySINDy-style APIs (fit/transform/get_feature_names). You can use these with or without PySINDy.
+The core components include:
+- **Feature Libraries**: `TrigLibrary`, `ChebyshevLibrary`, and `TimeDelayLibrary` for creating domain-specific candidate functions.
+- **Derivative Estimators**: Robust options like `SavitzkyGolay` and `FiniteDiff` for handling noisy data.
+- **Sparse Regression**: A cross-validated Sequentially Thresholded Least Squares (`cv_stlsq`) optimizer for automated hyperparameter tuning.
+- **Utilities**: Helpers for time-series validation, including leakage detection and safe lag generation.
 
-## Install (dev)
+All components are designed to be compatible with the PySINDy API (`fit`/`transform`/`get_feature_names`) but can also be used independently.
+
+## Installation
+
+First, clone the repository and set up a virtual environment.
+
 ```bash
 git clone https://github.com/emagnon/sindy-feature-extensions.git
 cd sindy-feature-extensions
-python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m venv .venv
+# On Linux/macOS:
+source .venv/bin/activate
+# On Windows (PowerShell):
+. \.venv\Scripts\Activate.ps1
+```
+
+Install the package and its dependencies. The `[examples]` option includes `pysindy` and `matplotlib`.
+
+```bash
+# Install the package with dependencies for the example
+pip install -e ".[examples]"
+
+# For development (testing, formatting)
 pip install -e ".[dev]"
-pre-commit install
-pytest
 ```
 
-## Quickstart
-```python
-import numpy as np
-from sindy_feat_ext.libraries import ChebyshevLibrary, TimeDelayLibrary, TrigLibrary
-from sindy_feat_ext.derivatives import FiniteDiff, SavitzkyGolay
-from sindy_feat_ext.sparsify import cv_stlsq
-from sindy_feat_ext.leakage import enforce_past_lags
-from sindy_feat_ext.utils import time_delay_embed
+## Running the Example
 
-# data
-t = np.linspace(0, 20, 2001)
-x = np.vstack([np.sin(t), np.cos(t)]).T  # (T, n_features)
+To run the damped pendulum simulation and see the results, execute the following command:
 
-# feature libraries (can be composed manually or via PySINDy GeneralizedLibrary)
-cheb = ChebyshevLibrary(degree=4, include_unity=False)
-trig = TrigLibrary(max_frequency=3)
-td = TimeDelayLibrary(lags=[1,2,5], include_current=True)
-
-Phi = np.hstack([cheb.fit_transform(x), trig.fit_transform(x), td.fit_transform(x)])
-
-# derivatives
-dxdt = FiniteDiff().differentiate(x, t)  # or SavitzkyGolay().differentiate(x, t)
-
-# cross-validated sparse regression (threshold search)
-coef, best_thr = cv_stlsq(Phi, dxdt[:, [0]], thresholds=np.logspace(-4, -1, 8), train_ratio=0.8)
-print(best_thr, coef.shape)
+```bash
+python examples/pendulum_trig_vs_poly.py
 ```
 
-## With PySINDy (optional)
-```python
-import pysindy as ps
-from sindy_feat_ext.libraries import ChebyshevLibrary, TimeDelayLibrary
+## Running Tests
 
-poly = ps.PolynomialLibrary(degree=2)
-cheb = ChebyshevLibrary(degree=4, include_unity=False)
-td = TimeDelayLibrary(lags=[1,2,5], include_current=True)
+To ensure all components are working correctly, run the test suite using `pytest`.
 
-lib = ps.feature_library.GeneralizedLibrary([poly, cheb, td])
-model = ps.SINDy(feature_library=lib)  # choose your optimizer as usual
+```bash
+pytest -q -rA
 ```
